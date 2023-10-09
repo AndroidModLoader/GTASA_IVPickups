@@ -1,6 +1,7 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
 #include <math.h>
+#include <time.h>
 
 #ifdef AML32
     #include "GTASA_STRUCTS.h"
@@ -11,7 +12,7 @@
 #endif
 #define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 
-MYMOD(net.pandagaming.rusjj.4pickups, IVPickups, 1.0, Pandagaming15 & RusJJ)
+MYMOD(net.pandagaming.rusjj.4pickups, IVPickups, 1.0.3, PandaGaming15 & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.1)
 END_DEPLIST()
@@ -19,27 +20,47 @@ END_DEPLIST()
 uintptr_t pGTASA;
 void* hGTASA;
 
+#define LIGHT_SHADOW_RADIUS (0.55f)
+#define RAD(_v) (float)( (_v) * ( M_PI / 180.0 ) )
+
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 //////      Variables
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 uint32_t *m_snTimeInMilliseconds;
+int timeStart;
+CRGBA Money(155, 200, 25);
+CRGBA Other(255, 155, 0);
 
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 //////      Functions
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
-#define RAD(_v) (_v * ( M_PI / 180.0 ) )
 bool (*ProcessVerticalLine)(CVector*, float, CColPoint *, CEntity **, bool, bool, bool, bool, bool, bool, CStoredCollPoly *);
+void (*StoreShadowToBeRendered)(uint8_t shadowTextureType, CVector const *posn, float frontX, float frontY, float sideX, float sideY, short intensity, uint8_t red, uint8_t green, uint8_t blue);
 inline bool IsMoney(uint16_t mdlidx)
 {
     return mdlidx == 1212;
 }
+inline bool IsJetpack(uint16_t mdlidx)
+{
+    return mdlidx == 370;
+}
+inline bool IsShovel(uint16_t mdlidx)
+{
+    return mdlidx == 337;
+}
 inline bool IsSupportedModel(uint16_t mdlidx)
 {
     return (mdlidx > 320 && mdlidx < 373) || IsMoney(mdlidx);
+}
+inline float CalculateIntensity(int s = 0)
+{
+    int seed = s + (int)*m_snTimeInMilliseconds;
+    float v = sinf(((seed % 4096 - 2048) * M_PI) / 4096.0f);
+    return v > 0 ? v : 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -53,35 +74,50 @@ extern "C" void PickupUpdate_Patch(CPickup* self)
     CVector worldPos = self->GetPosition();
     CObject* object = self->m_pObject;
     CVector& pos = object->GetPosition();
+    uint16_t model = object->GetModelIndex();
 
     CColPoint colPoint;
     CEntity *refEntityPtr; // trash var
     
-    if(IsSupportedModel(object->GetModelIndex()) &&
+    if(IsSupportedModel(model) &&
        ProcessVerticalLine(&worldPos, -1000.0, &colPoint, &refEntityPtr, true, false, false, false, false, false, NULL) &&
-       fabsf(colPoint.m_vecPoint.z - worldPos.z) < 2.5f)
+       fabsf(colPoint.m_vecPoint.z - worldPos.z) < 2.5f
+    )
     {
-        object->objectFlags.bIVPickupsAffected = true; // custom flag
-        CVector rot = { 0.0f, 0.0f, worldPos.x + worldPos.y };
-        self->m_nFlags.bIVPickupsAffected = true; // custom flag
-        pos = {worldPos.x, worldPos.y, colPoint.m_vecPoint.z + 0.01f};
-        if(!IsMoney(object->GetModelIndex()))
+        //CVector rot =
+        //{
+        //    colPoint.m_vecNormal.x * RAD(90.0f),
+        //    colPoint.m_vecNormal.y * RAD(90.0f),
+        //    worldPos.x + worldPos.y
+        //};
+        CVector rot =
         {
-            rot.x = RAD(90.0f);
+            0.0f,
+            0.0f,
+            timeStart + worldPos.x + worldPos.y
+        };
+        if(!IsMoney(model))
+        {
+            if(IsJetpack(model))
+            {
+                rot.x = 0.0f;
+                colPoint.m_vecPoint.z += 0.32f;
+            }
+            else
+            {
+                rot.x += RAD(90.0f);
+            }
         }
 
-        //rot = rot * colPoint.m_vecNormal;
-
-        //if(colPoint.m_vecNormal != CVector(0.0f, 0.0f, 1.0f))
-        //{
-        //    rot.x *= colPoint.m_vecNormal.x;
-        //    rot.y *= colPoint.m_vecNormal.y;
-        //}
-
+        object->objectFlags.bIVPickupsAffected = true; // custom flag
+        self->m_nFlags.bIVPickupsAffected = true; // custom flag
+        pos = { worldPos.x, worldPos.y, colPoint.m_vecPoint.z + 0.01f };
+        
         object->GetMatrix()->SetRotateOnly(rot.x, rot.y, rot.z);
     }
     else
     {
+        object->objectFlags.bIVPickupsAffected = false; // custom flag
         self->m_nFlags.bIVPickupsAffected = false; // custom flag
         pos = worldPos;
     }
@@ -105,7 +141,21 @@ extern "C" void PickupEffects_Patch(CObject* self)
     CMatrix* mat = self->GetMatrix();
     if(!mat) return;
 
-    if(!self->objectFlags.bIVPickupsAffected)
+    if(self->objectFlags.bIVPickupsAffected)
+    {
+        float intens = 0.22f * CalculateIntensity((int)self);
+        #define INTENS(_v) (uint8_t)(_v * intens)
+
+        if(IsMoney(self->GetModelIndex()))
+        {
+            StoreShadowToBeRendered(3, &self->GetPosition(), LIGHT_SHADOW_RADIUS, 0, 0, -LIGHT_SHADOW_RADIUS, 255, INTENS(Money.r), INTENS(Money.g), INTENS(Money.b));
+        }
+        else
+        {
+            StoreShadowToBeRendered(3, &self->GetPosition(), LIGHT_SHADOW_RADIUS, 0, 0, -LIGHT_SHADOW_RADIUS, 255, INTENS(Other.r), INTENS(Other.g), INTENS(Other.b));
+        }
+    }
+    else
     {
         mat->SetRotateZOnly((float)(*m_snTimeInMilliseconds % 4096) / 650.0f);
     }
@@ -155,6 +205,7 @@ __attribute__((optnone)) __attribute__((naked)) void PickupEffect_Inject(void)
 extern "C" void OnAllModsLoaded()
 {
     logger->SetTag("IVPickups");
+    timeStart = time(NULL);
 
     pGTASA = aml->GetLib("libGTASA.so");
     hGTASA = aml->GetLibHandle("libGTASA.so");
@@ -173,4 +224,5 @@ extern "C" void OnAllModsLoaded()
 
     SET_TO(m_snTimeInMilliseconds, aml->GetSym(hGTASA, "_ZN6CTimer22m_snTimeInMillisecondsE"));
     SET_TO(ProcessVerticalLine, aml->GetSym(hGTASA, "_ZN6CWorld19ProcessVerticalLineERK7CVectorfR9CColPointRP7CEntitybbbbbbP15CStoredCollPoly"));
+    SET_TO(StoreShadowToBeRendered, aml->GetSym(hGTASA, "_ZN8CShadows23StoreShadowToBeRenderedEhP7CVectorffffshhh"));
 }
