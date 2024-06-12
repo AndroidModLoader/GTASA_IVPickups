@@ -12,7 +12,7 @@
 #endif
 #define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 
-MYMOD(net.pandagaming.rusjj.4pickups, IVPickups, 1.0.3, PandaGaming15 & RusJJ)
+MYMOD(net.pandagaming.rusjj.4pickups, IVPickups, 1.0.4, PandaGaming15 & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.1)
 END_DEPLIST()
@@ -56,9 +56,9 @@ inline bool IsSupportedModel(uint16_t mdlidx)
 {
     return (mdlidx > 320 && mdlidx < 373) || IsMoney(mdlidx);
 }
-inline float CalculateIntensity(int s = 0)
+inline float CalculateIntensity(uintptr_t s = 0)
 {
-    int seed = s + (int)*m_snTimeInMilliseconds;
+    int seed = s + *m_snTimeInMilliseconds;
     float v = sinf(((seed % 4096 - 2048) * M_PI) / 4096.0f);
     return v > 0 ? v : 0;
 }
@@ -122,6 +122,7 @@ extern "C" void PickupUpdate_Patch(CPickup* self)
         pos = worldPos;
     }
 }
+#ifdef AML32
 __attribute__((optnone)) __attribute__((naked)) void PickupUpdate_Inject(void)
 {
     asm volatile(
@@ -134,6 +135,18 @@ __attribute__((optnone)) __attribute__((naked)) void PickupUpdate_Inject(void)
         "BX R12\n"
     :: "r" (PickupUpdate_BackTo));
 }
+#else
+__attribute__((optnone)) __attribute__((naked)) void PickupUpdate_Inject(void)
+{
+    asm volatile(
+        "MOV X0, X19\n" // this
+        "BL PickupUpdate_Patch\n");
+    asm volatile(
+        "MOV X16, %0\n"
+        "BR X16\n"
+    :: "r" (PickupUpdate_BackTo));
+}
+#endif
 
 uintptr_t PickupCEffect_BackTo, PickupMEffect_BackTo, PickupEffect_BackTo;
 extern "C" void PickupEffects_Patch(CObject* self)
@@ -143,7 +156,7 @@ extern "C" void PickupEffects_Patch(CObject* self)
 
     if(self->objectFlags.bIVPickupsAffected)
     {
-        float intens = 0.22f * CalculateIntensity((int)self);
+        float intens = 0.22f * CalculateIntensity((uintptr_t)self);
         #define INTENS(_v) (uint8_t)(_v * intens)
 
         if(IsMoney(self->GetModelIndex()))
@@ -154,12 +167,15 @@ extern "C" void PickupEffects_Patch(CObject* self)
         {
             StoreShadowToBeRendered(3, &self->GetPosition(), LIGHT_SHADOW_RADIUS, 0, 0, -LIGHT_SHADOW_RADIUS, 255, INTENS(Other.r), INTENS(Other.g), INTENS(Other.b));
         }
+
+        #undef INTENS
     }
     else
     {
         mat->SetRotateZOnly((float)(*m_snTimeInMilliseconds % 4096) / 650.0f);
     }
 }
+#ifdef AML32
 __attribute__((optnone)) __attribute__((naked)) void PickupCEffect_Inject(void)
 {
     asm volatile(
@@ -196,6 +212,37 @@ __attribute__((optnone)) __attribute__((naked)) void PickupEffect_Inject(void)
         "BX R12\n"
     :: "r" (PickupEffect_BackTo));
 }
+#else
+__attribute__((optnone)) __attribute__((naked)) void PickupCEffect_Inject(void)
+{
+    asm volatile(
+        "MOV X0, X19\n" // this
+        "BL PickupEffects_Patch\n");
+    asm volatile(
+        "MOV X16, %0\n"
+        "BR X16\n"
+    :: "r" (PickupCEffect_BackTo));
+}
+__attribute__((optnone)) __attribute__((naked)) void PickupMEffect_Inject(void)
+{
+    asm volatile(
+        "BL PickupEffects_Patch\n");
+    asm volatile(
+        "MOV X16, %0\n"
+        "BR X16\n"
+    :: "r" (PickupMEffect_BackTo));
+}
+__attribute__((optnone)) __attribute__((naked)) void PickupEffect_Inject(void)
+{
+    asm volatile(
+        "MOV X0, X19\n" // this
+        "BL PickupEffects_Patch\n");
+    asm volatile(
+        "MOV X16, %0\n"
+        "BR X16\n"
+    :: "r" (PickupEffect_BackTo));
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -210,6 +257,7 @@ extern "C" void OnAllModsLoaded()
     pGTASA = aml->GetLib("libGTASA.so");
     hGTASA = aml->GetLibHandle("libGTASA.so");
 
+  #ifdef AML32
     PickupUpdate_BackTo = pGTASA + 0x31D830 + 0x1;
     aml->Redirect(pGTASA + 0x31D7D8 + 0x1, (uintptr_t)PickupUpdate_Inject);
 
@@ -221,8 +269,21 @@ extern "C" void OnAllModsLoaded()
 
     PickupEffect_BackTo = pGTASA + 0x3202D4 + 0x1;
     aml->Redirect(pGTASA + 0x3201B0 + 0x1, (uintptr_t)PickupEffect_Inject);
+  #else
+    PickupUpdate_BackTo = pGTASA + 0x3E4B60;
+    aml->Redirect(pGTASA + 0x3E4B04, (uintptr_t)PickupUpdate_Inject);
 
-    SET_TO(m_snTimeInMilliseconds, aml->GetSym(hGTASA, "_ZN6CTimer22m_snTimeInMillisecondsE"));
-    SET_TO(ProcessVerticalLine, aml->GetSym(hGTASA, "_ZN6CWorld19ProcessVerticalLineERK7CVectorfR9CColPointRP7CEntitybbbbbbP15CStoredCollPoly"));
+    PickupCEffect_BackTo = pGTASA + 0x3E827C;
+    aml->Redirect(pGTASA + 0x3E80FC, (uintptr_t)PickupCEffect_Inject);
+
+    PickupMEffect_BackTo = pGTASA + 0x3E842C;
+    aml->Redirect(pGTASA + 0x3E82A4, (uintptr_t)PickupMEffect_Inject);
+
+    PickupEffect_BackTo = pGTASA + 0x3E7E68;
+    aml->Redirect(pGTASA + 0x3E7CDC, (uintptr_t)PickupEffect_Inject);
+  #endif
+
+    SET_TO(m_snTimeInMilliseconds,  aml->GetSym(hGTASA, "_ZN6CTimer22m_snTimeInMillisecondsE"));
+    SET_TO(ProcessVerticalLine,     aml->GetSym(hGTASA, "_ZN6CWorld19ProcessVerticalLineERK7CVectorfR9CColPointRP7CEntitybbbbbbP15CStoredCollPoly"));
     SET_TO(StoreShadowToBeRendered, aml->GetSym(hGTASA, "_ZN8CShadows23StoreShadowToBeRenderedEhP7CVectorffffshhh"));
 }
